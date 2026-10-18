@@ -1,4 +1,3 @@
-
 import os
 from pathlib import Path
 
@@ -27,20 +26,6 @@ app.add_middleware(
 )
 
 
-def to_bool(value):
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"true", "1", "yes", "on"}
-
-
-def coerce(key, value):
-    if key in {"port", "workers"}:
-        return int(value)
-    if key == "debug":
-        return to_bool(value)
-    return str(value)
-
-
 def normalize_layer(layer):
     result = {}
     for key, value in layer.items():
@@ -57,29 +42,37 @@ def normalize_layer(layer):
     return result
 
 
+def to_bool(value):
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"true", "1", "yes", "on"}
+
+
+def coerce(key, value):
+    if key in {"port", "workers"}:
+        return int(value)
+    if key == "debug":
+        return to_bool(value)
+    return str(value)
+
+
 @app.get("/effective-config")
-async def effective_config(
-    request: Request,
-    set: list[str] = Query(default=[]),
-):
+async def effective_config(request: Request):
     config = dict(DEFAULTS)
 
-    # Layer 2: environment-specific YAML.
+    # YAML configuration layer
     environment = os.environ.get("APP_ENV", "development")
     yaml_path = BASE_DIR / f"config.{environment}.yaml"
     if yaml_path.exists():
         with yaml_path.open("r", encoding="utf-8") as file:
-            yaml_layer = yaml.safe_load(file) or {}
-        config.update(normalize_layer(yaml_layer))
+            config.update(normalize_layer(yaml.safe_load(file) or {}))
 
-    # Layer 3: .env file. Parse it separately so OS variables
-    # can take precedence over it.
+    # .env configuration layer
     env_path = BASE_DIR / ".env"
     if env_path.exists():
-        file_layer = dotenv_values(env_path)
-        config.update(normalize_layer(file_layer))
+        config.update(normalize_layer(dotenv_values(env_path)))
 
-    # Layer 4: actual OS environment variables with APP_ prefix.
+    # OS environment variables take precedence over .env
     os_layer = {
         key: value
         for key, value in os.environ.items()
@@ -87,7 +80,7 @@ async def effective_config(
     }
     config.update(normalize_layer(os_layer))
 
-    # Layer 5: repeated query parameters, e.g. ?set=port=9000&set=debug=true
+    # Query overrides have the highest precedence.
     for override in request.query_params.getlist("set"):
         if "=" not in override:
             continue
@@ -96,12 +89,6 @@ async def effective_config(
         if key:
             config[key] = value
 
-    # Apply the required types after all layers have been merged.
     result = {key: coerce(key, value) for key, value in config.items()}
-
-    # Never reveal the actual secret.
-    if "api_key" in result:
-        result["api_key"] = "****"
-
+    result["api_key"] = "****"
     return result
-```
