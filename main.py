@@ -3,7 +3,7 @@ from pathlib import Path
 
 import yaml
 from dotenv import dotenv_values
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -31,6 +31,7 @@ def normalize_layer(layer):
     for key, value in layer.items():
         if value is None:
             continue
+
         key = str(key).strip()
         if key == "NUM_WORKERS":
             key = "workers"
@@ -38,6 +39,7 @@ def normalize_layer(layer):
             key = key[4:].lower()
         else:
             key = key.lower()
+
         result[key] = value
     return result
 
@@ -56,39 +58,47 @@ def coerce(key, value):
     return str(value)
 
 
+@app.get("/")
 @app.get("/effective-config")
 async def effective_config(request: Request):
     config = dict(DEFAULTS)
 
-    # YAML configuration layer
+    # Layer 2: environment-specific YAML
     environment = os.environ.get("APP_ENV", "development")
     yaml_path = BASE_DIR / f"config.{environment}.yaml"
+
     if yaml_path.exists():
         with yaml_path.open("r", encoding="utf-8") as file:
-            config.update(normalize_layer(yaml.safe_load(file) or {}))
+            yaml_config = yaml.safe_load(file) or {}
+        config.update(normalize_layer(yaml_config))
 
-    # .env configuration layer
+    # Layer 3: .env file
     env_path = BASE_DIR / ".env"
     if env_path.exists():
         config.update(normalize_layer(dotenv_values(env_path)))
 
-    # OS environment variables take precedence over .env
-    os_layer = {
+    # Layer 4: OS-level APP_* environment variables
+    os_config = {
         key: value
         for key, value in os.environ.items()
         if key.startswith("APP_") and key != "APP_ENV"
     }
-    config.update(normalize_layer(os_layer))
+    config.update(normalize_layer(os_config))
 
-    # Query overrides have the highest precedence.
+    # Layer 5: repeated CLI-style query overrides
     for override in request.query_params.getlist("set"):
         if "=" not in override:
             continue
+
         key, value = override.split("=", 1)
         key = key.strip().lower()
+
         if key:
+            if key == "num_workers":
+                key = "workers"
             config[key] = value
 
     result = {key: coerce(key, value) for key, value in config.items()}
     result["api_key"] = "****"
+
     return result
