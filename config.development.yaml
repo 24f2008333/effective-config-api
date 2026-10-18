@@ -1,0 +1,5 @@
+```yaml
+workers: 10
+debug: false
+log_level: info
+```
